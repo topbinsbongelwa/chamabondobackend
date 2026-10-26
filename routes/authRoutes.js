@@ -258,4 +258,60 @@ router.get("/me", authenticate, async (req, res, next) => {
   }
 });
 
+router.patch("/me", authenticate, async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.user.id)) {
+      return res.status(401).json({ message: "Invalid token" });
+    }
+
+    const updates = {};
+    const body = req.body || {};
+
+    if (Object.hasOwn(body, "email")) {
+      const email =
+        typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+
+      if (email && !EMAIL_PATTERN.test(email)) {
+        return res.status(400).json({ message: "Invalid email address" });
+      }
+
+      updates.email = email || null;
+    }
+
+    if (Object.hasOwn(body, "phone")) {
+      const phone = typeof body.phone === "string" ? body.phone.trim() : "";
+
+      if (phone && !/^[+0-9() .-]{7,25}$/.test(phone)) {
+        return res.status(400).json({ message: "Invalid phone number" });
+      }
+
+      updates.phone = phone || null;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: "Provide an email address or phone number to update",
+      });
+    }
+
+    updates.updatedAt = new Date();
+
+    const userId = new ObjectId(req.user.id);
+    const collection = users(req);
+    const result = await collection.updateOne(
+      { _id: userId },
+      { $set: updates }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "User no longer exists" });
+    }
+
+    const user = await collection.findOne({ _id: userId });
+    return res.json({ user: publicUser(user) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 module.exports = router;
