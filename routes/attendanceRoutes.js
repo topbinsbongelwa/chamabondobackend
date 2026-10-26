@@ -1,6 +1,19 @@
 const express = require("express");
 const { ObjectId } = require("mongodb");
 const { authenticate, requireRole } = require("../middleware/auth");
+const {
+  ATTENDANCE_STATUSES,
+  ATTENDED_STATUSES,
+  TEACHER_ROLES,
+  addDaysKey,
+  dateKeyInHarare,
+  isWeekdayKey,
+  monthKeysBetween,
+  normalizeStatus,
+  parseDateKey,
+  resolveStatsRange,
+  totalWeeks,
+} = require("../utils/attendance");
 
 const router = express.Router();
 
@@ -8,34 +21,22 @@ const router = express.Router();
   Attendance document shape (collection: "attendance")
   {
     _id: ObjectId,
-    teacherId: ObjectId,        // users._id
-    date: "YYYY-MM-DD",         // calendar day used by the unique index
+    teacherId: ObjectId,
+    date: "YYYY-MM-DD",         // Africa/Harare calendar day
     shift: "morning" | "afternoon",
     checkIn: Date | null,
     checkOut: Date | null,
-    status: "present" | "late" | "absent" | "half-day" | "leave",
+    status: "Present" | "Late" | "Sick Leave" | "Leave" | "Holiday" |
+            "School Duty" | "Sports/Activities Duty" | "Absent",
     notes: String,
     createdAt: Date,
     updatedAt: Date
   }
 
-  Morning shift is late after 08:00; afternoon shift is late after 13:00.
-
   Unique index: { teacherId: 1, date: 1 }
 */
 
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
-const STATUSES = [
-  "present",
-  "late",
-  "absent",
-  "half-day",
-  "leave",
-  "sick-leave",
-  "holiday",
-  "official-duty",
-];
 const SHIFT_ALIASES = {
   morning: "morning",
   am: "morning",
@@ -49,22 +50,14 @@ const DEFAULT_LATE_CUTOFFS = {
   afternoon: { hour: 13, minute: 0 },
 };
 
+const toDateKey = dateKeyInHarare;
+
 function attendance(req) {
   return req.app.locals.db.collection("attendance");
 }
 
 function users(req) {
   return req.app.locals.db.collection("users");
-}
-
-function pad(value) {
-  return String(value).padStart(2, "0");
-}
-
-function toDateKey(date = new Date()) {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-    date.getDate()
-  )}`;
 }
 
 function parseCutoff(value, fallback) {
@@ -108,20 +101,6 @@ function isLate(date = new Date(), shift = "morning") {
     date.getHours() > cutoff.hour ||
     (date.getHours() === cutoff.hour && date.getMinutes() > cutoff.minute)
   );
-}
-
-function parseDateKey(value) {
-  if (typeof value !== "string" || !DATE_PATTERN.test(value)) {
-    return null;
-  }
-
-  const date = new Date(`${value}T00:00:00.000Z`);
-
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date.toISOString().slice(0, 10) === value ? value : null;
 }
 
 function parseObjectId(value) {
@@ -177,6 +156,278 @@ function buildPagination(query) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+function emptyCounts() {
+  return Object.fromEntries(
+    ATTENDANCE_STATUSES.map((status) => [status, 0])
+  );
+}
+
+function statsAggregation(match, from) {
+  return [
+    { $match: match },
+    {
+      $facet: {
+        statusCounts: [
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ],
+        holidayDates: [
+          { $match: { status: "Holiday" } },
+          { $group: { _id: "$date" } },
+        ],
+        weekly: [
+          {
+            $addFields: {
+              weekIndex: {
+                $add: [
+                  {
+                    $floor: {
+                      $divide: [
+                        {
+                          $dateDiff: {
+                            startDate: {
+                              $dateFromString: { dateString: from },
+                            },
+                            endDate: {
+                              $dateFromString: { dateString: "$date" },
+                            },
+                            unit: "day",
+                          },
+                        },
+                        7,
+                      ],
+                    },
+                  },
+                  1,
+                ],
+              },
+            },
+          },
+          {
+            $group: {
+              _id: { week: "$weekIndex", status: "$status" },
+              count: { $sum: 1 },
+            },
+          },
+        ],
+        monthly: [
+          {
+            $group: {
+              _id: {
+                month: { $substrBytes: ["$date", 0, 7] },
+                status: "$status",
+              },
+              count: { $sum: 1 },
+            },
+          },
+        ],
+      },
+    },
+  ];
+}
+
+function countsFromRows(rows = []) {
+  const counts = emptyCounts();
+
+  for (const row of rows) {
+    if (Object.prototype.hasOwnProperty.call(counts, row._id)) {
+      counts[row._id] = row.count;
+    }
+  }
+
+  return counts;
+}
+
+function attendedDaysFor(counts) {
+  return ATTENDED_STATUSES.reduce(
+    (total, status) => total + (counts[status] || 0),
+    0
+  );
+}
+
+function percentage(attendedDays, possibleDays) {
+  if (!possibleDays) {
+    return 0;
+  }
+
+  return Math.round((attendedDays / possibleDays) * 1000) / 10;
+}
+
+function workingDaysFor(range, holidayDates = []) {
+  const holidays = new Set(holidayDates.filter(isWeekdayKey));
+  let workingDays = 0;
+
+  for (
+    let date = range.from;
+    date <= range.to;
+    date = addDaysKey(date, 1)
+  ) {
+    if (isWeekdayKey(date) && !holidays.has(date)) {
+      workingDays += 1;
+    }
+  }
+
+  return workingDays;
+}
+
+function buildWeekly(range, rows = []) {
+  const buckets = Array.from(
+    { length: totalWeeks(range.from, range.to) },
+    (_, index) => ({ week: `Week ${index + 1}`, ...emptyCounts() })
+  );
+
+  for (const row of rows) {
+    const bucket = buckets[(row._id.week || 0) - 1];
+
+    if (
+      bucket &&
+      Object.prototype.hasOwnProperty.call(bucket, row._id.status)
+    ) {
+      bucket[row._id.status] += row.count;
+    }
+  }
+
+  return buckets;
+}
+
+function buildMonthly(range, rows = []) {
+  const buckets = new Map(
+    monthKeysBetween(range.from, range.to).map((month) => [
+      month,
+      { month, ...emptyCounts() },
+    ])
+  );
+
+  for (const row of rows) {
+    const bucket = buckets.get(row._id.month);
+
+    if (
+      bucket &&
+      Object.prototype.hasOwnProperty.call(bucket, row._id.status)
+    ) {
+      bucket[row._id.status] += row.count;
+    }
+  }
+
+  return [...buckets.values()];
+}
+
+function buildStats(range, facet = {}, teacherCount = 1) {
+  const counts = countsFromRows(facet.statusCounts);
+  const holidayDates = (facet.holidayDates || []).map((row) => row._id);
+  const workingDays = workingDaysFor(range, holidayDates);
+  const attendedDays = attendedDaysFor(counts);
+
+  return {
+    range: { from: range.from, to: range.to },
+    workingDays,
+    counts,
+    attendedDays,
+    attendanceRate: percentage(attendedDays, workingDays * teacherCount),
+    weekly: buildWeekly(range, facet.weekly),
+    monthly: buildMonthly(range, facet.monthly),
+  };
+}
+
+function displayName(user) {
+  return (
+    [user.firstName, user.surname].filter(Boolean).join(" ") ||
+    user.name ||
+    user.ecNumber ||
+    "Teacher"
+  );
+}
+
+function buildByTeacher(teachers, rows, workingDays) {
+  const entries = new Map(
+    teachers.map((teacher) => [
+      String(teacher._id),
+      {
+        teacherId: String(teacher._id),
+        teacherName: displayName(teacher),
+        department: teacher.department || null,
+        counts: emptyCounts(),
+      },
+    ])
+  );
+
+  for (const row of rows) {
+    const entry = entries.get(String(row._id.teacherId));
+
+    if (
+      entry &&
+      Object.prototype.hasOwnProperty.call(entry.counts, row._id.status)
+    ) {
+      entry.counts[row._id.status] += row.count;
+    }
+  }
+
+  return [...entries.values()]
+    .map((entry) => {
+      const attendedDays = attendedDaysFor(entry.counts);
+
+      return {
+        ...entry,
+        attendedDays,
+        attendanceRate: percentage(attendedDays, workingDays),
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.attendanceRate - b.attendanceRate ||
+        a.teacherName.localeCompare(b.teacherName)
+    );
+}
+
+function buildByDepartment(byTeacher, workingDays) {
+  const entries = new Map();
+
+  for (const teacher of byTeacher) {
+    const department = teacher.department || "Unassigned";
+
+    if (!entries.has(department)) {
+      entries.set(department, {
+        department,
+        teacherCount: 0,
+        counts: emptyCounts(),
+      });
+    }
+
+    const entry = entries.get(department);
+    entry.teacherCount += 1;
+
+    for (const status of ATTENDANCE_STATUSES) {
+      entry.counts[status] += teacher.counts[status];
+    }
+  }
+
+  return [...entries.values()]
+    .map((entry) => {
+      const attendedDays = attendedDaysFor(entry.counts);
+
+      return {
+        ...entry,
+        attendedDays,
+        attendanceRate: percentage(
+          attendedDays,
+          workingDays * entry.teacherCount
+        ),
+      };
+    })
+    .sort((a, b) => a.department.localeCompare(b.department));
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function exactInsensitive(value) {
+  return { $regex: `^${escapeRegex(value)}$`, $options: "i" };
+}
+
+function normalizeDepartment(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
 router.post("/check-in", authenticate, async (req, res, next) => {
   try {
     const teacherId = parseObjectId(req.user.id);
@@ -212,7 +463,7 @@ router.post("/check-in", authenticate, async (req, res, next) => {
     }
 
     const shift = requestedShift || existing?.shift || inferShift(now);
-    const status = isLate(now, shift) ? "late" : "present";
+    const status = isLate(now, shift) ? "Late" : "Present";
 
     const record = await collection.findOneAndUpdate(
       { teacherId, date },
@@ -335,13 +586,12 @@ router.post("/mark", authenticate, async (req, res, next) => {
     }
 
     const body = req.body || {};
-    const status =
-      typeof body.status === "string"
-        ? body.status.trim().toLowerCase().replace(/_/g, "-")
-        : "";
+    const status = normalizeStatus(body.status);
 
-    if (!STATUSES.includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
+    if (!status) {
+      return res.status(400).json({
+        message: `status must be one of: ${ATTENDANCE_STATUSES.join(", ")}`,
+      });
     }
 
     const now = new Date();
@@ -400,15 +650,12 @@ router.get("/summary", authenticate, async (req, res, next) => {
       return res.status(401).json({ message: "Invalid token" });
     }
 
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    const from = `${year}-${pad(month + 1)}-01`;
-    const nextMonth = month === 11 ? { year: year + 1, month: 0 } : { year, month: month + 1 };
-    const to = `${nextMonth.year}-${pad(nextMonth.month + 1)}-01`;
-
+    const range = resolveStatsRange({});
     const records = await attendance(req)
-      .find({ teacherId, date: { $gte: from, $lt: to } })
+      .find({
+        teacherId,
+        date: { $gte: range.from, $lte: range.to },
+      })
       .toArray();
 
     const summary = {
@@ -421,22 +668,22 @@ router.get("/summary", authenticate, async (req, res, next) => {
 
     for (const record of records) {
       switch (record.status) {
-        case "present":
-        case "holiday":
-        case "official-duty":
+        case "Present":
+        case "Holiday":
+        case "School Duty":
+        case "Sports/Activities Duty":
           summary.present += 1;
           break;
-        case "late":
+        case "Late":
           summary.late += 1;
           break;
-        case "sick-leave":
+        case "Sick Leave":
           summary.sickLeave += 1;
           break;
-        case "leave":
-        case "half-day":
+        case "Leave":
           summary.leave += 1;
           break;
-        case "absent":
+        case "Absent":
           summary.absent += 1;
           break;
         default:
@@ -444,11 +691,197 @@ router.get("/summary", authenticate, async (req, res, next) => {
       }
     }
 
-    return res.json({ month: `${year}-${pad(month + 1)}`, summary });
+    return res.json({ month: range.from.slice(0, 7), summary });
   } catch (error) {
     return next(error);
   }
 });
+
+router.get("/stats", authenticate, async (req, res, next) => {
+  try {
+    const teacherId = parseObjectId(req.user.id);
+
+    if (!teacherId) {
+      return res.status(401).json({ message: "Invalid token" });
+    }
+
+    const range = resolveStatsRange(req.query);
+
+    if (range.error) {
+      return res.status(400).json({ message: range.error });
+    }
+
+    const [facet] = await attendance(req)
+      .aggregate(
+        statsAggregation(
+          {
+            teacherId,
+            date: { $gte: range.from, $lte: range.to },
+          },
+          range.from
+        )
+      )
+      .toArray();
+
+    return res.json(buildStats(range, facet || {}));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get(
+  "/stats/school",
+  authenticate,
+  requireRole("teacher_in_charge", "deputy_head", "head"),
+  async (req, res, next) => {
+    try {
+      const range = resolveStatsRange(req.query);
+
+      if (range.error) {
+        return res.status(400).json({ message: range.error });
+      }
+
+      const isTeacherInCharge = req.user.role === "teacher_in_charge";
+      let department = null;
+
+      if (isTeacherInCharge) {
+        const userId = parseObjectId(req.user.id);
+
+        if (!userId) {
+          return res.status(401).json({ message: "Invalid token" });
+        }
+
+        const currentUser = await users(req).findOne(
+          { _id: userId },
+          { projection: { department: 1 } }
+        );
+
+        if (!currentUser?.department) {
+          return res.status(403).json({
+            message: "Your account has no department assigned.",
+          });
+        }
+
+        department = currentUser.department;
+
+        if (
+          req.query.department !== undefined &&
+          req.query.department !== "" &&
+          normalizeDepartment(req.query.department) !==
+            normalizeDepartment(department)
+        ) {
+          return res.status(403).json({
+            message:
+              "You can only view attendance from your own department.",
+          });
+        }
+      } else if (
+        req.query.department !== undefined &&
+        req.query.department !== ""
+      ) {
+        if (
+          typeof req.query.department !== "string" ||
+          !req.query.department.trim()
+        ) {
+          return res.status(400).json({ message: "Invalid department" });
+        }
+
+        department = req.query.department.trim();
+      }
+
+      const teacherFilter = { role: { $in: TEACHER_ROLES } };
+
+      if (department) {
+        teacherFilter.department = exactInsensitive(department);
+      }
+
+      if (
+        req.query.teacherId !== undefined &&
+        req.query.teacherId !== ""
+      ) {
+        const teacherId = parseObjectId(req.query.teacherId);
+
+        if (!teacherId) {
+          return res.status(400).json({ message: "Invalid teacherId" });
+        }
+
+        teacherFilter._id = teacherId;
+      }
+
+      const teachers = await users(req)
+        .find(teacherFilter, {
+          projection: {
+            firstName: 1,
+            surname: 1,
+            name: 1,
+            ecNumber: 1,
+            department: 1,
+          },
+        })
+        .toArray();
+
+      const teacherCount = teachers.length;
+
+      if (!teacherCount) {
+        const stats = buildStats(range, {}, 1);
+        stats.teacherCount = 0;
+        stats.byTeacher = [];
+
+        if (!isTeacherInCharge) {
+          stats.byDepartment = [];
+        }
+
+        return res.json(stats);
+      }
+
+      const match = {
+        teacherId: { $in: teachers.map((teacher) => teacher._id) },
+        date: { $gte: range.from, $lte: range.to },
+      };
+
+      const [[facet], teacherRows] = await Promise.all([
+        attendance(req)
+          .aggregate(statsAggregation(match, range.from))
+          .toArray(),
+        attendance(req)
+          .aggregate([
+            { $match: match },
+            {
+              $group: {
+                _id: {
+                  teacherId: "$teacherId",
+                  status: "$status",
+                },
+                count: { $sum: 1 },
+              },
+            },
+          ])
+          .toArray(),
+      ]);
+
+      const stats = buildStats(range, facet || {}, teacherCount);
+      const byTeacher = buildByTeacher(
+        teachers,
+        teacherRows,
+        stats.workingDays
+      );
+
+      stats.teacherCount = teacherCount;
+      stats.byTeacher = byTeacher;
+
+      if (!isTeacherInCharge) {
+        stats.byDepartment = buildByDepartment(
+          byTeacher,
+          stats.workingDays
+        );
+      }
+
+      return res.json(stats);
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
 
 router.get("/me", authenticate, async (req, res, next) => {
   try {
@@ -522,11 +955,13 @@ router.get("/", authenticate, async (req, res, next) => {
     }
 
     if (req.query.status) {
-      if (!STATUSES.includes(req.query.status)) {
+      const status = normalizeStatus(req.query.status);
+
+      if (!status) {
         return res.status(400).json({ message: "Invalid status" });
       }
 
-      filter.status = req.query.status;
+      filter.status = status;
     }
 
     if (req.query.shift) {
@@ -609,14 +1044,20 @@ router.post("/", authenticate, requireRole("admin"), async (req, res, next) => {
 
     const shift = requestedShift || (checkIn ? inferShift(checkIn) : "morning");
 
-    let status = body.status;
+    let status = normalizeStatus(body.status);
 
-    if (status !== undefined && status !== "") {
-      if (!STATUSES.includes(status)) {
-        return res.status(400).json({ message: "Invalid status" });
-      }
-    } else {
-      status = checkIn ? (isLate(checkIn, shift) ? "late" : "present") : "absent";
+    if (
+      body.status !== undefined &&
+      body.status !== "" &&
+      !status
+    ) {
+      return res.status(400).json({
+        message: `status must be one of: ${ATTENDANCE_STATUSES.join(", ")}`,
+      });
+    }
+
+    if (!status) {
+      status = checkIn ? (isLate(checkIn, shift) ? "Late" : "Present") : "Absent";
     }
 
     const now = new Date();
@@ -743,11 +1184,15 @@ router.patch(
       }
 
       if (body.status !== undefined) {
-        if (!STATUSES.includes(body.status)) {
-          return res.status(400).json({ message: "Invalid status" });
+        const status = normalizeStatus(body.status);
+
+        if (!status) {
+          return res.status(400).json({
+            message: `status must be one of: ${ATTENDANCE_STATUSES.join(", ")}`,
+          });
         }
 
-        updates.status = body.status;
+        updates.status = status;
       }
 
       if (body.notes !== undefined) {
@@ -771,9 +1216,9 @@ router.patch(
 
         updates.status = checkIn
           ? isLate(checkIn, shift)
-            ? "late"
-            : "present"
-          : "absent";
+            ? "Late"
+            : "Present"
+          : "Absent";
       }
 
       if (!Object.keys(updates).length) {

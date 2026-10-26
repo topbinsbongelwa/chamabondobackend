@@ -4,6 +4,7 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const { connectDB } = require("./db");
+const { startAutoAbsentJob } = require("./jobs/autoAbsent");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -51,6 +52,7 @@ async function startServer() {
     await db
       .collection("attendance")
       .createIndex({ teacherId: 1, date: 1 }, { unique: true });
+    await db.collection("attendance").createIndex({ date: 1, status: 1 });
 
     // Scheme book lookups and duplicate protection
     const schemeBooks = db.collection("schemebooks");
@@ -68,6 +70,8 @@ async function startServer() {
       },
       { unique: true, name: "unique_teacher_scheme_book" }
     );
+
+    app.locals.autoAbsentJob = startAutoAbsentJob(db);
 
     app.listen(PORT, () => {
       console.log(`Server running at http://localhost:${PORT}`);
