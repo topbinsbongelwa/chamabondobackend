@@ -31,6 +31,7 @@ app.use("/api/attendance", require("./routes/attendanceRoutes"));
 app.use("/api/kras", require("./routes/kraRoutes"));
 app.use("/api/announcements", require("./routes/announcementRoutes"));
 app.use("/api/schemebooks", require("./routes/schemeBookRoutes"));
+app.use("/api/scheme-books", require("./routes/schemeBookRoutes"));
 
 // 404 for unknown routes
 app.use((req, res) => {
