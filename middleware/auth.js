@@ -99,6 +99,7 @@ function authenticate(req, res, next) {
       name: payload.name,
       role: payload.role,
       department: payload.department,
+      plan: payload.plan,
     };
 
     return next();

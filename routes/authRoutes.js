@@ -82,6 +82,8 @@ function publicUser(user) {
     department: user.department || null,
     email: user.email || null,
     role: user.role || "teacher",
+    plan: user.plan || "free",
+    planExpiresAt: user.planExpiresAt || null,
     approved: user.approved !== false,
     createdAt: user.createdAt,
   };
@@ -93,6 +95,7 @@ function tokenPayload(user) {
     ecNumber: user.ecNumber,
     name: displayName(user),
     role: user.role || "teacher",
+    plan: user.plan || "free",
   };
 }
 
@@ -167,6 +170,7 @@ router.post("/register", async (req, res, next) => {
       email: email || null,
       passwordHash: await hashPassword(password),
       role: "teacher",
+      plan: "free",
       department:
         typeof body.department === "string" && body.department.trim()
           ? body.department.trim()

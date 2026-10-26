@@ -33,6 +33,7 @@ app.use("/api/announcements", require("./routes/announcementRoutes"));
 app.use("/api/calendar", require("./routes/calendarRoutes"));
 app.use("/api/schemebooks", require("./routes/schemeBookRoutes"));
 app.use("/api/scheme-books", require("./routes/schemeBookRoutes"));
+app.use("/api/ai", require("./routes/aiRoutes"));
 
 // 404 for unknown routes
 app.use((req, res) => {
@@ -66,6 +67,24 @@ async function startServer() {
     await calendar.createIndex({ pinned: -1, createdAt: -1 });
     await calendar.createIndex({ expiresAt: 1 });
     await calendar.createIndex({ "assignedTeachers.teacherId": 1 });
+
+    const aiChats = db.collection("ai_chats");
+    await aiChats.createIndex({ userId: 1, updatedAt: -1 });
+    await aiChats.createIndex(
+      { shareToken: 1 },
+      {
+        unique: true,
+        partialFilterExpression: { shareToken: { $type: "string" } },
+      }
+    );
+    await db.collection("ai_messages").createIndex({ chatId: 1, createdAt: 1 });
+    await db.collection("ai_projects").createIndex({ userId: 1, createdAt: -1 });
+    await db
+      .collection("ai_settings")
+      .createIndex({ userId: 1 }, { unique: true });
+    await db
+      .collection("ai_usage")
+      .createIndex({ userId: 1, date: 1 }, { unique: true });
 
     // Scheme book lookups and duplicate protection
     const schemeBooks = db.collection("schemebooks");

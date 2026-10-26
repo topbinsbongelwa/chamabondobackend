@@ -158,6 +158,45 @@ function uploadSchemeBookFile(req, res, next) {
   });
 }
 
+const AI_ALLOWED_EXTENSIONS = new Set([".pdf", ".docx", ".jpg", ".jpeg", ".png"]);
+const aiUpload = multer({
+  storage: STORAGE === "cloudinary" ? multer.memoryStorage() : diskStorage,
+  limits: {
+    fileSize: MAX_FILE_SIZE,
+    files: 1,
+    fields: 5,
+    fieldSize: 10 * 1024,
+  },
+  fileFilter(req, file, callback) {
+    const extension = path.extname(file.originalname || "").toLowerCase();
+    if (
+      !AI_ALLOWED_EXTENSIONS.has(extension) ||
+      !allowedMimeType(extension, file.mimetype)
+    ) {
+      return callback(
+        new Error("Unsupported file type. Upload a PDF, DOCX, JPG or PNG file.")
+      );
+    }
+    return callback(null, true);
+  },
+});
+
+function uploadAiFile(req, res, next) {
+  aiUpload.single("file")(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        message: "File is too large. The maximum size is 10 MB.",
+      });
+    }
+    return res.status(400).json({
+      message: error.message || "Could not process the uploaded file.",
+    });
+  });
+}
+
 function uploadToCloudinary(file) {
   const extension = path.extname(file.originalname || "").toLowerCase();
   const mimeType = MIME_BY_EXTENSION[extension];
@@ -281,4 +320,5 @@ module.exports = {
   removeStoredFile,
   discardUploadedFile,
   uploadSchemeBookFile,
+  uploadAiFile,
 };
