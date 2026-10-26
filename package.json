@@ -2,7 +2,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:official-duty": "node scripts/migrateOfficialDuty.js"
+    "migrate:official-duty": "node scripts/migrateOfficialDuty.js",
+    "migrate:updates-calendar": "node scripts/migrateUpdatesToCalendar.js"
   },
   "dependencies": {
     "busboy": "^1.6.0",

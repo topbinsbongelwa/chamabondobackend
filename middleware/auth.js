@@ -98,6 +98,7 @@ function authenticate(req, res, next) {
       email: payload.email,
       name: payload.name,
       role: payload.role,
+      department: payload.department,
     };
 
     return next();

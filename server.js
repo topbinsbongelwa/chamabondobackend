@@ -30,6 +30,7 @@ app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/attendance", require("./routes/attendanceRoutes"));
 app.use("/api/kras", require("./routes/kraRoutes"));
 app.use("/api/announcements", require("./routes/announcementRoutes"));
+app.use("/api/calendar", require("./routes/calendarRoutes"));
 app.use("/api/schemebooks", require("./routes/schemeBookRoutes"));
 app.use("/api/scheme-books", require("./routes/schemeBookRoutes"));
 
@@ -54,6 +55,17 @@ async function startServer() {
       .collection("attendance")
       .createIndex({ teacherId: 1, date: 1 }, { unique: true });
     await db.collection("attendance").createIndex({ date: 1, status: 1 });
+
+    // Calendar visibility, range and feed queries
+    const calendar = db.collection("calendar");
+    await calendar.createIndex({ startDate: 1 });
+    await calendar.createIndex({ endDate: 1 });
+    await calendar.createIndex({ type: 1 });
+    await calendar.createIndex({ audience: 1, department: 1 });
+    await calendar.createIndex({ type: 1, startDate: 1 });
+    await calendar.createIndex({ pinned: -1, createdAt: -1 });
+    await calendar.createIndex({ expiresAt: 1 });
+    await calendar.createIndex({ "assignedTeachers.teacherId": 1 });
 
     // Scheme book lookups and duplicate protection
     const schemeBooks = db.collection("schemebooks");

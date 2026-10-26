@@ -14,6 +14,7 @@ const {
   resolveStatsRange,
   totalWeeks,
 } = require("../utils/attendance");
+const { getHolidayDates } = require("../utils/calendar");
 
 const router = express.Router();
 
@@ -311,9 +312,17 @@ function buildMonthly(range, rows = []) {
   return [...buckets.values()];
 }
 
-function buildStats(range, facet = {}, teacherCount = 1) {
+function buildStats(
+  range,
+  facet = {},
+  teacherCount = 1,
+  calendarHolidays = []
+) {
   const counts = countsFromRows(facet.statusCounts);
-  const holidayDates = (facet.holidayDates || []).map((row) => row._id);
+  const holidayDates = [
+    ...(facet.holidayDates || []).map((row) => row._id),
+    ...calendarHolidays,
+  ];
   const workingDays = workingDaysFor(range, holidayDates);
   const attendedDays = attendedDaysFor(counts);
 
@@ -711,19 +720,24 @@ router.get("/stats", authenticate, async (req, res, next) => {
       return res.status(400).json({ message: range.error });
     }
 
-    const [facet] = await attendance(req)
-      .aggregate(
-        statsAggregation(
-          {
-            teacherId,
-            date: { $gte: range.from, $lte: range.to },
-          },
-          range.from
+    const [[facet], calendarHolidays] = await Promise.all([
+      attendance(req)
+        .aggregate(
+          statsAggregation(
+            {
+              teacherId,
+              date: { $gte: range.from, $lte: range.to },
+            },
+            range.from
+          )
         )
-      )
-      .toArray();
+        .toArray(),
+      getHolidayDates(req.app.locals.db, range.from, range.to),
+    ]);
 
-    return res.json(buildStats(range, facet || {}));
+    return res.json(
+      buildStats(range, facet || {}, 1, calendarHolidays)
+    );
   } catch (error) {
     return next(error);
   }
@@ -740,6 +754,12 @@ router.get(
       if (range.error) {
         return res.status(400).json({ message: range.error });
       }
+
+      const calendarHolidays = await getHolidayDates(
+        req.app.locals.db,
+        range.from,
+        range.to
+      );
 
       const isTeacherInCharge = req.user.role === "teacher_in_charge";
       let department = null;
@@ -823,7 +843,7 @@ router.get(
       const teacherCount = teachers.length;
 
       if (!teacherCount) {
-        const stats = buildStats(range, {}, 1);
+        const stats = buildStats(range, {}, 1, calendarHolidays);
         stats.teacherCount = 0;
         stats.byTeacher = [];
 
@@ -859,7 +879,12 @@ router.get(
           .toArray(),
       ]);
 
-      const stats = buildStats(range, facet || {}, teacherCount);
+      const stats = buildStats(
+        range,
+        facet || {},
+        teacherCount,
+        calendarHolidays
+      );
       const byTeacher = buildByTeacher(
         teachers,
         teacherRows,
