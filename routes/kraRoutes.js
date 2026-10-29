@@ -2,6 +2,7 @@ const express = require("express");
 const Busboy = require("busboy");
 const { GridFSBucket, ObjectId } = require("mongodb");
 const { authenticate, signToken, verifyToken } = require("../middleware/auth");
+const { logAction } = require("../controllers/adminController");
 
 const router = express.Router();
 const MAX_DOCUMENT_SIZE = 3 * 1000 * 1000 * 1000;
@@ -502,6 +503,10 @@ router.patch("/:id/approve", authenticate, headmasterOnly, async (req, res, next
     );
     if (!result) return res.status(404).json({ message: "Pending KRA not found" });
 
+    await logAction(req, "kra.reviewed", id, {
+      status: result.status,
+      previousStatus: "pending",
+    });
     return res.json({ kra: publicKra(result) });
   } catch (error) {
     return next(error);
@@ -533,6 +538,10 @@ router.patch("/:id/reject", authenticate, headmasterOnly, async (req, res, next)
     );
     if (!result) return res.status(404).json({ message: "Pending KRA not found" });
 
+    await logAction(req, "kra.reviewed", id, {
+      status: result.status,
+      previousStatus: "pending",
+    });
     return res.json({ kra: publicKra(result) });
   } catch (error) {
     return next(error);

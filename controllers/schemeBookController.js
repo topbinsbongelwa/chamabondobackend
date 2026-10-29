@@ -4,6 +4,7 @@ const {
   removeStoredFile,
   discardUploadedFile,
 } = require("../middleware/upload");
+const { logAction } = require("./adminController");
 
 const COLLECTION = "schemebooks";
 const GLOBAL_REVIEWER_ROLES = new Set(["deputy_head", "head"]);
@@ -713,6 +714,10 @@ async function reviewSchemeBook(req, res, next) {
       });
     }
 
+    await logAction(req, "schemebook.reviewed", id, {
+      status: updated.status,
+      previousStatus: "Pending",
+    });
     return res.json({ schemeBook: publicSchemeBook(updated) });
   } catch (error) {
     return next(error);

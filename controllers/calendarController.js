@@ -123,10 +123,24 @@ function visibilityFilter(actor) {
     }
   }
 
-  return { $or: clauses };
+  return {
+    $and: [
+      { $or: clauses },
+      {
+        $or: [
+          { isCommunication: { $ne: true } },
+          { published: true },
+        ],
+      },
+    ],
+  };
 }
 
 function isVisible(item, actor) {
+  if (item.isCommunication === true && item.published !== true) {
+    return false;
+  }
+
   if (item.audience === "all") {
     return true;
   }
@@ -208,6 +222,9 @@ function buildPagination(query = {}, defaultLimit = 20) {
 
 function publicCalendar(item) {
   const { _id, ...rest } = item;
+  delete rest.recipientIds;
+  delete rest.readBy;
+  delete rest.rsvps;
 
   return {
     ...rest,

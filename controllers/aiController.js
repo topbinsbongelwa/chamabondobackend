@@ -4,7 +4,7 @@ const {
   storeFile,
   discardUploadedFile,
 } = require("../middleware/upload");
-const intelliAiClient = require("../services/intelliAiClient");
+const aiProviders = require("../services/aiProviders");
 
 const MAX_MESSAGE_LENGTH = 12000;
 const MAX_ATTACHMENTS = 5;
@@ -535,7 +535,7 @@ async function streamChat(req, res, next) {
   let chatId = null;
   if (body.chatId !== undefined) {
     chatId = parseId(body.chatId);
-    if (!chatId) return res.status(400).json({ message: "Invalid chat id." });
+    // A stale client-side ID starts a fresh chat; only valid IDs are looked up.
   }
 
   try {
@@ -642,7 +642,7 @@ async function streamChat(req, res, next) {
     };
     sendEvent({ type: "chat", chatId: chatId.toString() });
 
-    const answer = await intelliAiClient.postChat(providerPayload, {
+    const answer = await aiProviders.postChat(providerPayload, {
       signal: abortController.signal,
       onStatus: (text) => sendEvent({ type: "status", text }),
       onToken: (text) => sendEvent({ type: "token", text }),
@@ -669,7 +669,8 @@ async function streamChat(req, res, next) {
   } catch (error) {
     if (res.headersSent) {
       if (!res.destroyed && !res.writableEnded) {
-        const message = error.message.startsWith("Intelli AI")
+        const message =
+          /^(Intelli AI|OpenAI|Google Gemini|Anthropic Claude)\b/.test(error.message)
           ? error.message
           : "Unable to complete the AI response.";
         res.write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
@@ -677,7 +678,7 @@ async function streamChat(req, res, next) {
       }
       return;
     }
-    if (error.message.startsWith("Intelli AI")) {
+    if (/^(Intelli AI|OpenAI|Google Gemini|Anthropic Claude)\b/.test(error.message)) {
       return res.status(502).json({ message: error.message });
     }
     return next(error);
@@ -685,11 +686,11 @@ async function streamChat(req, res, next) {
 }
 
 async function models(req, res) {
-  return res.json({ models: await intelliAiClient.fetchModels() });
+  return res.json({ models: await aiProviders.fetchModels() });
 }
 
 async function plugins(req, res) {
-  return res.json({ plugins: await intelliAiClient.fetchPlugins() });
+  return res.json({ plugins: await aiProviders.fetchPlugins() });
 }
 
 async function upload(req, res, next) {

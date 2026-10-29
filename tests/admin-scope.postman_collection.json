@@ -1,0 +1,117 @@
+{
+  "info": {
+    "name": "Chamabondo admin department scope",
+    "description": "Run with a teacher_in_charge token for ECD. Foreign department reads must be forbidden or empty, and target writes must be forbidden.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000" },
+    { "key": "ticToken", "value": "" },
+    { "key": "otherDepartment", "value": "Primary" },
+    { "key": "foreignStaffId", "value": "" },
+    { "key": "foreignAttendanceId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "TIC cannot request another department",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{ticToken}}" }
+        ],
+        "url": "{{baseUrl}}/api/admin/staff?department={{otherDepartment}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('cross-department staff read is forbidden', function () {",
+              "  pm.response.to.have.status(403);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "TIC staff list contains only ECD",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{ticToken}}" }
+        ],
+        "url": "{{baseUrl}}/api/admin/staff"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('staff list is limited to ECD', function () {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  body.staff.forEach(function (person) {",
+              "    pm.expect(String(person.department).toLowerCase()).to.eql('ecd');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "TIC cannot read a foreign staff profile",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{ticToken}}" }
+        ],
+        "url": "{{baseUrl}}/api/admin/staff/{{foreignStaffId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('foreign staff profile is hidden', function () {",
+              "  pm.response.to.have.status(404);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "TIC cannot correct foreign attendance",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{ticToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\":\"Present\",\"reason\":\"scope test\"}"
+        },
+        "url": "{{baseUrl}}/api/admin/attendance/{{foreignAttendanceId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('foreign attendance write is forbidden', function () {",
+              "  pm.response.to.have.status(403);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

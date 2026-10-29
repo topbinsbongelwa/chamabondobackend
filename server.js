@@ -3,8 +3,11 @@ require("dotenv").config();
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const { connectDB } = require("./db");
+const helmet = require("helmet");
+const { connectDB, client } = require("./db");
 const { startAutoAbsentJob } = require("./jobs/autoAbsent");
+const { startCommsPublisher } = require("./jobs/publishComms");
+const { configurePush } = require("./services/pushNotifications");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -14,6 +17,7 @@ app.use(
     origin: process.env.CLIENT_URL || "http://localhost:5173",
   })
 );
+app.use(helmet());
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
@@ -34,6 +38,10 @@ app.use("/api/calendar", require("./routes/calendarRoutes"));
 app.use("/api/schemebooks", require("./routes/schemeBookRoutes"));
 app.use("/api/scheme-books", require("./routes/schemeBookRoutes"));
 app.use("/api/ai", require("./routes/aiRoutes"));
+app.use("/api/admin", require("./routes/adminRoutes"));
+app.use("/api/comms", require("./routes/commsRoutes"));
+app.use("/api/notifications", require("./routes/notificationRoutes"));
+app.use("/api/push", require("./routes/pushRoutes"));
 
 // 404 for unknown routes
 app.use((req, res) => {
@@ -50,6 +58,9 @@ async function startServer() {
   try {
     const db = await connectDB();
     app.locals.db = db;
+    app.locals.mongoClient = client;
+
+    await db.collection("users").createIndex({ role: 1, department: 1, active: 1 });
 
     // One attendance record per teacher per day
     await db
@@ -67,6 +78,21 @@ async function startServer() {
     await calendar.createIndex({ pinned: -1, createdAt: -1 });
     await calendar.createIndex({ expiresAt: 1 });
     await calendar.createIndex({ "assignedTeachers.teacherId": 1 });
+    await calendar.createIndex({ isCommunication: 1, published: 1, scheduledAt: 1 });
+    await calendar.createIndex({ "createdBy.id": 1, createdAt: -1 });
+
+    await db.collection("audit_log").createIndex({ createdAt: -1 });
+    await db.collection("audit_log").createIndex({ actorId: 1, createdAt: -1 });
+    await db.collection("notifications").createIndex({ userId: 1, createdAt: -1 });
+    await db.collection("notifications").createIndex({ userId: 1, readAt: 1 });
+    await db.collection("notifications").createIndex(
+      { userId: 1, sourceId: 1, type: 1 },
+      { unique: true, partialFilterExpression: { sourceId: { $type: "objectId" } } }
+    );
+    await db.collection("push_subscriptions").createIndex(
+      { userId: 1, endpoint: 1 },
+      { unique: true }
+    );
 
     const aiChats = db.collection("ai_chats");
     await aiChats.createIndex({ userId: 1, updatedAt: -1 });
@@ -104,6 +130,8 @@ async function startServer() {
     );
 
     app.locals.autoAbsentJob = startAutoAbsentJob(db);
+    app.locals.commsPublisherJob = startCommsPublisher(db);
+    configurePush();
 
     app.listen(PORT, () => {
       console.log(`Server running at http://localhost:${PORT}`);

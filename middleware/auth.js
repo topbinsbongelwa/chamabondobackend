@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { ObjectId } = require("mongodb");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const TOKEN_TTL_SECONDS =
@@ -82,7 +83,7 @@ function verifyToken(token) {
   return payload;
 }
 
-function authenticate(req, res, next) {
+async function authenticate(req, res, next) {
   const authorization = req.headers.authorization || "";
   const [scheme, token] = authorization.split(" ");
 
@@ -90,27 +91,59 @@ function authenticate(req, res, next) {
     return res.status(401).json({ message: "Authentication required" });
   }
 
+  let payload;
   try {
-    const payload = verifyToken(token);
-
-    req.user = {
-      id: payload.sub,
-      email: payload.email,
-      name: payload.name,
-      role: payload.role,
-      department: payload.department,
-      plan: payload.plan,
-    };
-
-    return next();
+    payload = verifyToken(token);
   } catch (error) {
     const message =
       error.message === "Token expired"
         ? "Token expired"
         : "Invalid or expired token";
-
     return res.status(401).json({ message });
   }
+
+  if (!ObjectId.isValid(payload.sub)) {
+    return res.status(401).json({ message: "Invalid token" });
+  }
+
+  let user;
+  try {
+    user = await req.app.locals.db.collection("users").findOne(
+      { _id: new ObjectId(payload.sub) },
+      {
+        projection: {
+          name: 1,
+          firstName: 1,
+          surname: 1,
+          email: 1,
+          role: 1,
+          department: 1,
+          plan: 1,
+          active: 1,
+        },
+      }
+    );
+  } catch (error) {
+    return next(error);
+  }
+
+  if (!user || user.active === false) {
+    return res.status(401).json({ message: "Account is inactive or unavailable" });
+  }
+
+  req.user = {
+    id: payload.sub,
+    email: user.email || payload.email,
+    name:
+      [user.firstName, user.surname].filter(Boolean).join(" ") ||
+      user.name ||
+      payload.name,
+    role: user.role || "teacher",
+    department: user.department || null,
+    plan: user.plan || payload.plan,
+  };
+
+  return next();
 }
 
 function requireRole(...roles) {

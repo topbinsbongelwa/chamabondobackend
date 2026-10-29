@@ -95,6 +95,7 @@ function tokenPayload(user) {
     ecNumber: user.ecNumber,
     name: displayName(user),
     role: user.role || "teacher",
+    department: user.department || null,
     plan: user.plan || "free",
   };
 }
@@ -180,6 +181,7 @@ router.post("/register", async (req, res, next) => {
           ? body.phone.trim()
           : null,
       approved: true,
+      active: true,
       createdAt: now,
       updatedAt: now,
     };
@@ -223,6 +225,10 @@ router.post("/login", async (req, res, next) => {
       return res
         .status(401)
         .json({ message: "Invalid EC number or password" });
+    }
+
+    if (user.active === false) {
+      return res.status(401).json({ message: "Account is inactive" });
     }
 
     const passwordMatches = await verifyPassword(password, user.passwordHash);
