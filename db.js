@@ -1,24 +1,28 @@
-
 const { MongoClient } = require("mongodb");
 
-const uri = process.env.MONGODB_URI;
+const uri = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/chamabondo";
 
-if (!uri) {
-  throw new Error("MONGODB_URI is missing from your .env file");
-}
-
-const client = new MongoClient(uri);
+const client = new MongoClient(uri, {
+  serverSelectionTimeoutMS: 5000,
+  maxPoolSize: 20,
+  retryWrites: true,
+});
 
 async function connectDB() {
-  await client.connect();
+  try {
+    if (!client.topology?.isConnected?.()) {
+      await client.connect();
+    }
 
-  const db = client.db("chamabondo");
+    const db = client.db("chamabondo");
+    await db.command({ ping: 1 });
 
-  await db.command({ ping: 1 });
-
-  console.log("MongoDB connected successfully!");
-
-  return db;
+    console.log("MongoDB connected successfully!");
+    return db;
+  } catch (error) {
+    console.error("MongoDB connection failed:", error.message);
+    throw error;
+  }
 }
 
 module.exports = { connectDB, client };
