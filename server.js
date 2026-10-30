@@ -22,14 +22,24 @@ function normalizeOrigin(value) {
     .replace(/\/+$/, "");
 }
 
+const DEFAULT_CLIENT_ORIGINS = [
+  "https://chamasattendance-sys.vercel.app",
+];
+
 function getAllowedOrigins() {
-  const origins = String(process.env.CLIENT_URL || "")
+  const configured = String(process.env.CLIENT_URL || "")
     .split(",")
     .map(normalizeOrigin)
     .filter(Boolean);
+  const origins = [...DEFAULT_CLIENT_ORIGINS, ...configured];
 
   if (process.env.NODE_ENV !== "production") {
-    origins.push("http://localhost:5173", "http://localhost:3000");
+    origins.push(
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "http://127.0.0.1:5173",
+      "http://127.0.0.1:3000"
+    );
   }
 
   return Array.from(new Set(origins));
@@ -37,17 +47,40 @@ function getAllowedOrigins() {
 
 const allowedOrigins = getAllowedOrigins();
 
-if (!allowedOrigins.length) {
+if (!process.env.CLIENT_URL && process.env.NODE_ENV === "production") {
   console.warn(
-    "[cors] CLIENT_URL is not set. Browser origins will be rejected until it is configured."
+    `[cors] CLIENT_URL is not set. Allowing default origin(s): ${DEFAULT_CLIENT_ORIGINS.join(", ")}`
   );
+}
+
+function isLocalDevOrigin(origin) {
+  if (process.env.NODE_ENV === "production") return false;
+
+  try {
+    const { protocol, hostname } = new URL(origin);
+
+    if (protocol !== "http:" && protocol !== "https:") return false;
+
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      /^10\./.test(hostname) ||
+      /^192\.168\./.test(hostname) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isAllowedOrigin(origin) {
   if (!origin) return true;
   if (allowedOrigins.includes("*")) return true;
+  if (allowedOrigins.includes(normalizeOrigin(origin))) return true;
 
-  return allowedOrigins.includes(normalizeOrigin(origin));
+  // Allow localhost and LAN addresses while developing, including phone testing.
+  return isLocalDevOrigin(origin);
 }
 
 const corsOptions = {
