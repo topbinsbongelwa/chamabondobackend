@@ -34,13 +34,34 @@ const ALLOWED_MIME_TYPES = {
 const FILE_TYPE_ERROR =
   "Unsupported file type. Upload a PDF, DOC, DOCX, JPG or PNG file.";
 
-if (STORAGE !== "local" && STORAGE !== "cloudinary") {
-  throw new Error("STORAGE must be either 'local' or 'cloudinary'");
+let cloudinary = null;
+let cloudinaryConfigError = null;
+
+function assertStorageConfig() {
+  if (STORAGE !== "local" && STORAGE !== "cloudinary") {
+    const error = new Error("STORAGE must be either 'local' or 'cloudinary'");
+    error.code = "INVALID_STORAGE";
+    throw error;
+  }
+
+  return STORAGE;
 }
 
-let cloudinary = null;
+function getCloudinary() {
+  assertStorageConfig();
 
-if (STORAGE === "cloudinary") {
+  if (STORAGE !== "cloudinary") {
+    return null;
+  }
+
+  if (cloudinary) {
+    return cloudinary;
+  }
+
+  if (cloudinaryConfigError) {
+    throw cloudinaryConfigError;
+  }
+
   const required = [
     "CLOUDINARY_CLOUD_NAME",
     "CLOUDINARY_API_KEY",
@@ -49,19 +70,26 @@ if (STORAGE === "cloudinary") {
   const missing = required.filter((name) => !process.env[name]);
 
   if (missing.length) {
-    throw new Error(
+    cloudinaryConfigError = new Error(
       `STORAGE=cloudinary requires: ${missing.join(", ")}`
     );
+    cloudinaryConfigError.code = "CLOUDINARY_NOT_CONFIGURED";
+    throw cloudinaryConfigError;
   }
 
-  cloudinary = require("cloudinary").v2;
-  cloudinary.config({
+  const client = require("cloudinary").v2;
+  client.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET,
     secure: true,
   });
-} else {
+
+  cloudinary = client;
+  return cloudinary;
+}
+
+if (STORAGE !== "cloudinary") {
   try {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   } catch (error) {
@@ -129,6 +157,16 @@ const upload = multer({
 });
 
 function uploadSchemeBookFile(req, res, next) {
+  try {
+    assertStorageConfig();
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      ...(error.code ? { code: error.code } : {}),
+      message: error.message,
+    });
+  }
+
   upload.single("file")(req, res, (error) => {
     if (!error) {
       return next();
@@ -193,6 +231,16 @@ const aiUpload = multer({
 });
 
 function uploadAiFile(req, res, next) {
+  try {
+    assertStorageConfig();
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      ...(error.code ? { code: error.code } : {}),
+      message: error.message,
+    });
+  }
+
   aiUpload.single("file")(req, res, (error) => {
     if (!error) {
       return next();
@@ -209,6 +257,7 @@ function uploadAiFile(req, res, next) {
 }
 
 function uploadToCloudinary(file) {
+  const client = getCloudinary();
   const extension = path.extname(file.originalname || "").toLowerCase();
   const mimeType = MIME_BY_EXTENSION[extension];
   const isImage = mimeType.startsWith("image/");
@@ -218,7 +267,7 @@ function uploadToCloudinary(file) {
     : randomName(extension);
 
   return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
+    const stream = client.uploader.upload_stream(
       {
         folder: process.env.CLOUDINARY_FOLDER || "schemebooks",
         public_id: publicId,
@@ -244,6 +293,8 @@ async function storeFile(file) {
   if (!file) {
     return null;
   }
+
+  assertStorageConfig();
 
   const extension = path.extname(file.originalname || "").toLowerCase();
   const originalName =
@@ -283,11 +334,20 @@ async function removeStoredFile(file) {
     file.storage === "cloudinary" || /^https?:\/\//i.test(file.url || "");
 
   if (isCloudinary) {
-    if (!file.publicId || !cloudinary) {
+    let client;
+
+    try {
+      client = getCloudinary();
+    } catch (error) {
+      console.error("Could not configure Cloudinary:", error.message);
       return;
     }
 
-    await cloudinary.uploader
+    if (!file.publicId || !client) {
+      return;
+    }
+
+    await client.uploader
       .destroy(file.publicId, {
         resource_type: file.resourceType || "image",
         invalidate: true,

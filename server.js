@@ -22,27 +22,37 @@ function normalizeOrigin(value) {
     .replace(/\/+$/, "");
 }
 
-const allowedOrigins = String(process.env.CLIENT_URL || "")
-  .split(",")
-  .map(normalizeOrigin)
-  .filter(Boolean);
+function getAllowedOrigins() {
+  const origins = String(process.env.CLIENT_URL || "")
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+
+  if (process.env.NODE_ENV !== "production") {
+    origins.push("http://localhost:5173", "http://localhost:3000");
+  }
+
+  return Array.from(new Set(origins));
+}
+
+const allowedOrigins = getAllowedOrigins();
 
 if (!allowedOrigins.length) {
   console.warn(
-    "[cors] CLIENT_URL is not set. All origins are allowed until you configure it."
+    "[cors] CLIENT_URL is not set. Browser origins will be rejected until it is configured."
   );
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (allowedOrigins.includes("*")) return true;
+
+  return allowedOrigins.includes(normalizeOrigin(origin));
 }
 
 const corsOptions = {
   origin(origin, callback) {
-    // Requests without an Origin header (curl, health checks, server-to-server)
-    // are always allowed.
-    if (!origin) return callback(null, true);
-
-    if (!allowedOrigins.length) return callback(null, true);
-    if (allowedOrigins.includes("*")) return callback(null, true);
-
-    return callback(null, allowedOrigins.includes(normalizeOrigin(origin)));
+    return callback(null, isAllowedOrigin(origin));
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
@@ -51,8 +61,30 @@ const corsOptions = {
   optionsSuccessStatus: 204,
 };
 
+app.set("trust proxy", 1);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (!origin || isAllowedOrigin(origin)) {
+    return next();
+  }
+
+  console.warn(
+    `[cors] Rejected origin: ${origin} (${req.method} ${req.originalUrl})`
+  );
+
+  return res.status(403).json({
+    status: "error",
+    code: "CORS_ORIGIN_NOT_ALLOWED",
+    message: `Origin ${origin} is not allowed. Add it to CLIENT_URL on the backend.`,
+    allowedOrigins,
+  });
+});
+
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions), (req, res) => res.sendStatus(204));
+app.options(/.*/, cors(corsOptions));
+
 app.use(helmet());
 app.use(express.json({ limit: "2mb" }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -62,6 +94,44 @@ try {
 } catch (error) {
   console.warn("[push] Push notifications are not configured:", error.message);
 }
+
+async function connectDatabaseMiddleware(req, res, next) {
+  const pathname = req.path.replace(/\/+$/, "") || "/";
+
+  if (pathname === "/" || pathname === "/api/health") {
+    return next();
+  }
+
+  try {
+    const db = await connectDB();
+
+    app.locals.db = db;
+    app.locals.mongoClient = getClient();
+
+    ensureIndexes(db);
+
+    return next();
+  } catch (error) {
+    console.error("[db] Database unavailable:", error.message);
+
+    const missing =
+      error.code === "MONGO_URI_MISSING" ||
+      /MONGO_URI|MONGODB_URI/.test(error.message || "");
+
+    return res.status(missing ? 500 : 503).json({
+      status: "error",
+      code: missing ? "DATABASE_NOT_CONFIGURED" : "DATABASE_UNAVAILABLE",
+      message: missing
+        ? "Database is not configured. Set MONGO_URI (or MONGODB_URI) in the backend environment variables."
+        : "Could not connect to the database. Please try again.",
+      ...(process.env.NODE_ENV !== "production"
+        ? { error: error.message }
+        : {}),
+    });
+  }
+}
+
+app.use(connectDatabaseMiddleware);
 
 app.get("/", (req, res) => {
   res.json({
@@ -91,46 +161,13 @@ app.get("/api/health", async (req, res) => {
 
   return res.status(connected ? 200 : 503).json({
     status: connected ? "ok" : "error",
+    db: connected ? "connected" : "disconnected",
     database: connected ? "connected" : "disconnected",
-    reason,
+    corsOrigins: allowedOrigins,
+    ...(reason ? { reason } : {}),
     timestamp: new Date().toISOString(),
   });
 });
-
-async function connectDatabaseMiddleware(req, res, next) {
-  try {
-    const db = await connectDB();
-
-    // Routes read the connection from app.locals at request time.
-    app.locals.db = db;
-    app.locals.mongoClient = getClient();
-
-    // Do not block the API on index creation. Failures are logged in db.js.
-    ensureIndexes(db);
-
-    return next();
-  } catch (error) {
-    console.error("[db] Database unavailable:", error.message);
-
-    const missing =
-      error.code === "MONGO_URI_MISSING" ||
-      /MONGO_URI|MONGODB_URI/.test(error.message || "");
-
-    return res.status(503).json({
-      status: "error",
-      code: missing ? "DATABASE_NOT_CONFIGURED" : "DATABASE_UNAVAILABLE",
-      message: missing
-        ? "Database is not configured. Set MONGO_URI (or MONGODB_URI) in the backend environment variables."
-        : "Could not connect to the database. Please try again.",
-      ...(process.env.NODE_ENV !== "production"
-        ? { error: error.message }
-        : {}),
-    });
-  }
-}
-
-// Every route below this line gets a cached MongoDB connection.
-app.use(connectDatabaseMiddleware);
 
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/attendance", require("./routes/attendanceRoutes"));
@@ -145,12 +182,10 @@ app.use("/api/comms", require("./routes/commsRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/api/push", require("./routes/pushRoutes"));
 
-// 404 for unknown routes
 app.use((req, res) => {
-  res.status(404).json({ message: "Route not found" });
+  res.status(404).json({ status: "error", message: "Route not found" });
 });
 
-// Central error handler
 app.use((err, req, res, next) => {
   console.error(err);
 
@@ -158,12 +193,13 @@ app.use((err, req, res, next) => {
     return next(err);
   }
 
-  return res
-    .status(err.status || 500)
-    .json({ message: err.message || "Server error" });
+  return res.status(err.status || 500).json({
+    status: "error",
+    ...(err.code ? { code: err.code } : {}),
+    message: err.message || "Server error",
+  });
 });
 
-// Local development only. Vercel imports the exported app as a serverless function.
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
