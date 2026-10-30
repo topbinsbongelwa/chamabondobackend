@@ -1,4 +1,3 @@
-const cron = require("node-cron");
 const {
   HARARE_TIME_ZONE,
   TEACHER_ROLES,
@@ -90,6 +89,9 @@ function startAutoAbsentJob(db) {
     );
     return null;
   }
+
+  // Load node-cron only for long-running servers, never for Vercel functions.
+  const cron = require("node-cron");
 
   const task = cron.schedule(
     CRON_EXPRESSION,

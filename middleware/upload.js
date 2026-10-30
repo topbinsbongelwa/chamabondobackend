@@ -1,11 +1,14 @@
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const multer = require("multer");
 
 const STORAGE = String(process.env.STORAGE || "local").trim().toLowerCase();
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const UPLOAD_DIR = path.join(__dirname, "..", "uploads");
+const UPLOAD_DIR = process.env.VERCEL
+  ? path.join(os.tmpdir(), "chamabondo-uploads")
+  : path.join(__dirname, "..", "uploads");
 
 const MIME_BY_EXTENSION = {
   ".pdf": "application/pdf",
@@ -59,7 +62,15 @@ if (STORAGE === "cloudinary") {
     secure: true,
   });
 } else {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  try {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  } catch (error) {
+    // Vercel's project directory is read-only. Cloudinary is recommended there.
+    console.warn(
+      `[upload] Could not create local upload directory (${UPLOAD_DIR}):`,
+      error.message
+    );
+  }
 }
 
 function allowedMimeType(extension, mimeType) {

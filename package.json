@@ -1,4 +1,7 @@
 {
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",

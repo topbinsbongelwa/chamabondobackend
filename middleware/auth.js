@@ -1,19 +1,30 @@
 const crypto = require("crypto");
 const { ObjectId } = require("mongodb");
 
-const JWT_SECRET = process.env.JWT_SECRET;
-const TOKEN_TTL_SECONDS =
-  Number(process.env.JWT_EXPIRES_IN_SECONDS) || 60 * 60 * 24 * 7;
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
 
-if (!JWT_SECRET) {
-  throw new Error("JWT_SECRET is missing from your .env file");
+  if (!secret) {
+    const error = new Error(
+      "JWT_SECRET is missing. Add it to the backend environment variables."
+    );
+    error.code = "JWT_SECRET_MISSING";
+    throw error;
+  }
+
+  return secret;
+}
+
+function getTokenTtlSeconds() {
+  return Number(process.env.JWT_EXPIRES_IN_SECONDS) || 60 * 60 * 24 * 7;
 }
 
 function base64url(value) {
   return Buffer.from(value).toString("base64url");
 }
 
-function signToken(payload, ttlSeconds = TOKEN_TTL_SECONDS) {
+function signToken(payload, ttlSeconds = getTokenTtlSeconds()) {
+  const secret = getJwtSecret();
   const now = Math.floor(Date.now() / 1000);
   const header = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const body = base64url(
@@ -25,7 +36,7 @@ function signToken(payload, ttlSeconds = TOKEN_TTL_SECONDS) {
   );
   const data = `${header}.${body}`;
   const signature = crypto
-    .createHmac("sha256", JWT_SECRET)
+    .createHmac("sha256", secret)
     .update(data)
     .digest("base64url");
 
@@ -37,6 +48,7 @@ function verifyToken(token) {
     throw new Error("Missing token");
   }
 
+  const secret = getJwtSecret();
   const parts = token.split(".");
 
   if (parts.length !== 3) {
@@ -46,7 +58,7 @@ function verifyToken(token) {
   const [header, body, signature] = parts;
   const data = `${header}.${body}`;
   const expected = crypto
-    .createHmac("sha256", JWT_SECRET)
+    .createHmac("sha256", secret)
     .update(data)
     .digest("base64url");
 
@@ -95,6 +107,13 @@ async function authenticate(req, res, next) {
   try {
     payload = verifyToken(token);
   } catch (error) {
+    if (error.code === "JWT_SECRET_MISSING") {
+      return res.status(500).json({
+        message:
+          "Server is not configured. Set JWT_SECRET in the backend environment variables.",
+      });
+    }
+
     const message =
       error.message === "Token expired"
         ? "Token expired"

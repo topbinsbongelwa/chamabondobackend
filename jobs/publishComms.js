@@ -1,4 +1,3 @@
-const cron = require("node-cron");
 const { HARARE_TIME_ZONE } = require("../utils/attendance");
 const { sendPush } = require("../services/pushNotifications");
 
@@ -75,6 +74,9 @@ async function publishDueComms(db, now = new Date()) {
 }
 
 function startCommsPublisher(db) {
+  // Load node-cron only for long-running servers, never for Vercel functions.
+  const cron = require("node-cron");
+
   const task = cron.schedule(
     "* * * * *",
     async () => {

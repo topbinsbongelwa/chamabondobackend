@@ -224,7 +224,7 @@ router.post("/login", async (req, res, next) => {
     if (!user) {
       return res
         .status(401)
-        .json({ message: "Invalid EC number or password" });
+        .json({ message: "Wrong EC number or password" });
     }
 
     if (user.active === false) {
@@ -236,7 +236,7 @@ router.post("/login", async (req, res, next) => {
     if (!passwordMatches) {
       return res
         .status(401)
-        .json({ message: "Invalid EC number or password" });
+        .json({ message: "Wrong EC number or password" });
     }
 
     return res.json({
